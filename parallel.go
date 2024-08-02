@@ -7,7 +7,9 @@ import (
 	"runtime"
 )
 
-func generateOffsets(filename string, done <-chan int, workers int) []chan int64 {
+const channelSize = 100
+
+func generateOffsets(filename string, done <-chan int, workers int, patternLength int64) []chan int64 {
 	fileInfo, err := os.Stat(filename)
 	if err != nil {
 		log.Println(err)
@@ -16,7 +18,7 @@ func generateOffsets(filename string, done <-chan int, workers int) []chan int64
 	offsets := make([]chan int64, workers)
 
 	for i := range offsets {
-		offsets[i] = make(chan int64)
+		offsets[i] = make(chan int64, channelSize)
 	}
 
 	go func() {
@@ -26,12 +28,13 @@ func generateOffsets(filename string, done <-chan int, workers int) []chan int64
 			}
 		}()
 
-		for i := int64(0); i < fileInfo.Size()/bufferSize; i++ {
+		for i, k := int64(0), 0; i < fileInfo.Size(); i += bufferSize - patternLength + 1 {
 			select {
 			case <-done:
 				return
 			default:
-				offsets[i%int64(workers)] <- i * bufferSize
+				offsets[k%workers] <- i
+				k++
 			}
 		}
 	}()
@@ -46,7 +49,7 @@ func launchWorker(pattern, filename string, offset <-chan int64, done <-chan int
 		return nil
 	}
 
-	finds := make(chan []int64)
+	finds := make(chan []int64, channelSize)
 
 	go func() {
 		defer close(finds)
@@ -95,7 +98,7 @@ func divideWorkload(pattern, filename string, offsets []chan int64, done <-chan 
 }
 
 func fanIn(inputChannels []<-chan []int64, done <-chan int) <-chan int64 {
-	findings := make(chan int64)
+	findings := make(chan int64, channelSize)
 
 	go func() {
 		defer close(findings)
@@ -125,8 +128,8 @@ func fanIn(inputChannels []<-chan []int64, done <-chan int) <-chan int64 {
 }
 
 func ParaSearch(pattern, filename string, done <-chan int) {
-	workers := runtime.NumCPU()
-	offsets := generateOffsets(filename, done, workers)
+	workers := runtime.NumCPU() - 1
+	offsets := generateOffsets(filename, done, workers, int64(len(pattern)))
 	outputs := divideWorkload(pattern, filename, offsets, done, workers)
 	output := fanIn(outputs, done)
 
